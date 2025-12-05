@@ -20,8 +20,11 @@ def main():
         while True:
             random_number = random.randint(1, 1000)
             message = f"{random_number}".encode("utf-8")
-            sock.sendto(message, (server_host, server_port))
-            print(f"Sent: {random_number}")
+            try:
+                sock.sendto(message, (server_host, server_port))
+                print(f"Sent: {random_number}")
+            except OSError as e:
+                print(f"Failed to send: {e}")
             time.sleep(send_interval)
     except KeyboardInterrupt:
         print("Client stopped")

@@ -22,11 +22,19 @@ def main():
     try:
         while True:
             data, addr = recv_sock.recvfrom(1024)
-            message = data.decode("utf-8")
+            try:
+                message = data.decode("utf-8")
+            except UnicodeDecodeError:
+                print(f"Received invalid UTF-8 data from {addr}")
+                continue
+
             print(f"Received from {addr}: {message}")
 
-            send_sock.sendto(data, (forward_host, forward_port))
-            print(f"Forwarded: {message}")
+            try:
+                send_sock.sendto(data, (forward_host, forward_port))
+                print(f"Forwarded: {message}")
+            except OSError as e:
+                print(f"Failed to forward: {e}")
     except KeyboardInterrupt:
         print("Server stopped")
     finally:

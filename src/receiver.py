@@ -17,7 +17,11 @@ def main():
     try:
         while True:
             data, addr = sock.recvfrom(1024)
-            message = data.decode("utf-8")
+            try:
+                message = data.decode("utf-8")
+            except UnicodeDecodeError:
+                print(f"Received invalid UTF-8 data from {addr}")
+                continue
             print(f"Received from {addr}: {message}")
     except KeyboardInterrupt:
         print("Receiver stopped")
