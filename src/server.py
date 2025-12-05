@@ -57,7 +57,7 @@ class Forwarder:
                 try:
                     # Process the raw data
                     processed_data = process_func(data, addr)
-                    
+
                     # Forward the processed data
                     self.forward_sock.sendto(processed_data, (self.forward_host, self.forward_port))
                 except OSError as e:

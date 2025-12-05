@@ -1,4 +1,4 @@
-"""System test for UDP client-server-receiver data flow - runs inside Docker."""
+"""System test for UDP sender-server-receiver data flow - runs inside Docker."""
 
 import json
 import socket

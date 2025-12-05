@@ -7,4 +7,4 @@ COPY tests/ ./tests/
 
 RUN pip install --no-cache-dir pytest
 
-CMD ["python", "-u", "src/client.py"]
+CMD ["python", "-u", "src/sender.py"]

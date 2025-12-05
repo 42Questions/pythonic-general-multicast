@@ -1,4 +1,4 @@
-"""UDP Client that sends random numbers to a server."""
+"""UDP Sender that sends data to a server."""
 
 import json
 import logging
@@ -45,7 +45,7 @@ class Sender:
                 "Socket not initialized. Use 'with Sender(...) as sender:' context manager."
             )
 
-        _LOGGER.info(f"UDP Client started, sending to {self.server_host}:{self.server_port}")
+        _LOGGER.info(f"UDP Sender started, sending to {self.server_host}:{self.server_port}")
 
         try:
             while True:
@@ -60,7 +60,7 @@ class Sender:
                     _LOGGER.error(f"Failed to send: {e}")
                 time.sleep(self.send_interval)
         except KeyboardInterrupt:
-            _LOGGER.info("Client stopped")
+            _LOGGER.info("Sender stopped")
 
 
 def main():
