@@ -1,0 +1,38 @@
+services:
+  server:
+    build: .
+    command: python -u src/server.py
+    environment:
+      - LISTEN_HOST=0.0.0.0
+      - LISTEN_PORT=5000
+      - FORWARD_HOST=receiver
+      - FORWARD_PORT=5001
+    networks:
+      - udp-network
+    depends_on:
+      - receiver
+
+  client:
+    build: .
+    command: python -u src/client.py
+    environment:
+      - SERVER_HOST=server
+      - SERVER_PORT=5000
+      - SEND_INTERVAL=1.0
+    networks:
+      - udp-network
+    depends_on:
+      - server
+
+  receiver:
+    build: .
+    command: python -u src/receiver.py
+    environment:
+      - LISTEN_HOST=0.0.0.0
+      - LISTEN_PORT=5001
+    networks:
+      - udp-network
+
+networks:
+  udp-network:
+    driver: bridge
