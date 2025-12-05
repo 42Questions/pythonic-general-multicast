@@ -1,7 +1,11 @@
 """UDP Server that receives data and forwards it to another socket."""
 
+import logging
 import os
 import socket
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+_LOGGER = logging.getLogger(__name__)
 
 
 def main():
@@ -16,8 +20,8 @@ def main():
 
     send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    print(f"UDP Server started, listening on {listen_host}:{listen_port}")
-    print(f"Forwarding to {forward_host}:{forward_port}")
+    _LOGGER.info(f"UDP Server started, listening on {listen_host}:{listen_port}")
+    _LOGGER.info(f"Forwarding to {forward_host}:{forward_port}")
 
     try:
         while True:
@@ -25,18 +29,18 @@ def main():
             try:
                 message = data.decode("utf-8")
             except UnicodeDecodeError:
-                print(f"Received invalid UTF-8 data from {addr}")
+                _LOGGER.error(f"Received invalid UTF-8 data from {addr}")
                 continue
 
-            print(f"Received from {addr}: {message}")
+            _LOGGER.info(f"Received from {addr}: {message}")
 
             try:
                 send_sock.sendto(data, (forward_host, forward_port))
-                print(f"Forwarded: {message}")
+                _LOGGER.info(f"Forwarded: {message}")
             except OSError as e:
-                print(f"Failed to forward: {e}")
+                _LOGGER.error(f"Failed to forward: {e}")
     except KeyboardInterrupt:
-        print("Server stopped")
+        _LOGGER.info("Server stopped")
     finally:
         recv_sock.close()
         send_sock.close()

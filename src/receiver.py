@@ -1,7 +1,11 @@
 """UDP Receiver that listens for forwarded data."""
 
+import logging
 import os
 import socket
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+_LOGGER = logging.getLogger(__name__)
 
 
 def main():
@@ -12,7 +16,7 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((listen_host, listen_port))
 
-    print(f"UDP Receiver started, listening on {listen_host}:{listen_port}")
+    _LOGGER.info(f"UDP Receiver started, listening on {listen_host}:{listen_port}")
 
     try:
         while True:
@@ -20,11 +24,11 @@ def main():
             try:
                 message = data.decode("utf-8")
             except UnicodeDecodeError:
-                print(f"Received invalid UTF-8 data from {addr}")
+                _LOGGER.error(f"Received invalid UTF-8 data from {addr}")
                 continue
-            print(f"Received from {addr}: {message}")
+            _LOGGER.info(f"Received from {addr}: {message}")
     except KeyboardInterrupt:
-        print("Receiver stopped")
+        _LOGGER.info("Receiver stopped")
     finally:
         sock.close()
 

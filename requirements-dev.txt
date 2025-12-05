@@ -1,0 +1,10 @@
+# Testing
+pytest>=8.0.0
+tox>=4.0.0
+
+# Linting and formatting
+ruff>=0.8.0
+pylint>=3.0.0
+
+# Type checking
+mypy>=1.0.0

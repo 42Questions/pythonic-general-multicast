@@ -48,6 +48,53 @@ LISTEN_PORT=5000 FORWARD_HOST=localhost FORWARD_PORT=5001 python src/server.py
 SERVER_HOST=localhost SERVER_PORT=5000 python src/client.py
 ```
 
+## Development
+
+### Setup Development Environment
+
+```bash
+# Install development dependencies
+pip install -r requirements-dev.txt
+```
+
+### Running Tests and Checks
+
+This project uses [tox](https://tox.wiki/) for testing and code quality checks:
+
+```bash
+# Run all checks (format, lint, typecheck, docker tests)
+tox
+
+# Run specific environments
+tox -e format      # Check code formatting with ruff
+tox -e lint        # Run pylint
+tox -e typecheck   # Run mypy type checking
+tox -e docker      # Run Docker Compose system tests
+
+# Run multiple environments
+tox -e format,lint,typecheck
+
+# List all available environments
+tox -l
+```
+
+### Manual Testing
+
+Run the system tests inside Docker containers:
+
+```bash
+# Using the shell script (deprecated, use tox instead)
+./run_tests.sh
+
+# Or manually with docker compose
+docker compose run --rm test
+```
+
+The tests verify:
+- All services can communicate over the Docker network
+- Data packets contain proper SPM (Source Path Message) sequence numbers
+- End-to-end data flow from client → server → receiver
+
 ## Configuration
 
 ### Client Environment Variables
@@ -73,6 +120,17 @@ SERVER_HOST=localhost SERVER_PORT=5000 python src/client.py
 |----------|---------|-------------|
 | `LISTEN_HOST` | `0.0.0.0` | Host to listen on |
 | `LISTEN_PORT` | `5001` | Port to listen on |
+
+## Packet Format
+
+Data packets use JSON format with SPM (Source Path Message) for packet loss detection:
+
+```json
+{
+  "spm": 123,      // Monotonically increasing sequence number
+  "data": 456      // Actual data payload
+}
+```
 
 ## License
 

@@ -33,6 +33,16 @@ services:
     networks:
       - udp-network
 
+  test:
+    build: .
+    command: python -m pytest tests/test_system.py -v -s
+    networks:
+      - udp-network
+    depends_on:
+      - client
+      - server
+      - receiver
+
 networks:
   udp-network:
     driver: bridge
