@@ -1,7 +1,12 @@
-"""PGM DLR (Designated Local Repairer) that handles repair requests."""
+"""PGM DLR (Designated Local Repairer) with multi-threaded processing."""
 import logging
 import os
 import socket
+import threading
+import time
+from dataclasses import dataclass
+from enum import Enum, auto
+from queue import Empty, Queue
 from types import TracebackType
 
 from src.base import NetworkParticipant, RepairCache
@@ -11,20 +16,41 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 _LOGGER = logging.getLogger(__name__)
 
 
-# -> NAKs -> listen_for_naks thread -> write to head of queue every 0.01s with batch of requested data
-# -> Data -> listen_for_data thread -> queue to immediately -> 
+class MessageType(Enum):
+    """Types of messages in the processing queue."""
 
-# -> queue -> process thread -> if naks found then fetch repair data and send to forwarder
-#                            -> update cached with new data
+    DATA = auto()
+    NAK_BATCH = auto()
+
+
+@dataclass
+class DataMessage:
+    """Message containing DATA packet information."""
+
+    sequence: int
+    packet_bytes: bytes
+
+
+@dataclass
+class NakBatchMessage:
+    """Message containing aggregated NAK requests."""
+
+    sequences: set[int]
+
+
+@dataclass
+class QueueMessage:
+    """Wrapper for messages in the processing queue."""
+
+    msg_type: MessageType
+    data_msg: DataMessage | None = None
+    nak_msg: NakBatchMessage | None = None
+
 
 class DLR(NetworkParticipant):
-    """PGM DLR (Designated Local Repairer).
+    """PGM DLR with multi-threaded MPSC queue.
 
-    Responsibilities:
-    - Receive DATA/SPM packets from forwarder (like a receiver)
-    - Maintain repair cache of recent DATA packets
-    - Listen for NAKs from forwarder
-    - Send repair DATA back to forwarder for broadcast to all receivers
+    3 threads: data listener, NAK listener (aggregates 0.01s), processor.
     """
 
     def __init__(
@@ -36,18 +62,8 @@ class DLR(NetworkParticipant):
         forwarder_host: str,
         forwarder_port: int,
         repair_cache_size: int,
+        nak_aggregation_interval: float,
     ) -> None:
-        """Initialize PGM DLR.
-
-        Args:
-            listen_host: Host to listen for DATA/SPM from forwarder.
-            listen_port: Port to listen for DATA/SPM from forwarder.
-            nak_listen_host: Host to listen for NAKs from forwarder.
-            nak_listen_port: Port to listen for NAKs from forwarder.
-            forwarder_host: Forwarder host to send repairs to.
-            forwarder_port: Forwarder port to send repairs to.
-            repair_cache_size: Size of repair cache (default: 100).
-        """
         super().__init__()
         self.listen_host = listen_host
         self.listen_port = listen_port
@@ -55,26 +71,43 @@ class DLR(NetworkParticipant):
         self.nak_listen_port = nak_listen_port
         self.forwarder_host = forwarder_host
         self.forwarder_port = forwarder_port
-        self.repair_cache = RepairCache(repair_cache_size)
+        self.nak_aggregation_interval = nak_aggregation_interval
+
+        self.processing_queue: Queue[QueueMessage] = Queue()
+        self.repair_cache = RepairCache(_max_size=repair_cache_size)
+
+        self.data_sock: socket.socket | None = None
         self.nak_sock: socket.socket | None = None
         self.repair_sock: socket.socket | None = None
-        self.last_spm = -1
+
+        self.stop_event = threading.Event()
+        self.threads: list[threading.Thread] = []
+
+        _LOGGER.info(f"DLR initialized: data={listen_host}:{listen_port}, "
+                     f"nak={nak_listen_host}:{nak_listen_port}, "
+                     f"repair={forwarder_host}:{forwarder_port}")
 
     def __enter__(self) -> DLR:
-        """Open UDP sockets when entering the context."""
-        # Socket for receiving DATA/SPM
-        self.sock = self._create_socket()
-        self.sock.bind((self.listen_host, self.listen_port))
+        self.data_sock = self._create_socket()
+        self.data_sock.bind((self.listen_host, self.listen_port))
+        self.data_sock.settimeout(0.1)
 
-        # Socket for receiving NAKs
         self.nak_sock = self._create_socket()
         self.nak_sock.bind((self.nak_listen_host, self.nak_listen_port))
-        self.nak_sock.settimeout(0.01)  # Very short timeout for non-blocking
+        self.nak_sock.settimeout(0.1)
 
-        # Socket for sending repairs
         self.repair_sock = self._create_socket()
 
-        self.last_spm = -1
+        self.stop_event.clear()
+        self.threads = [
+            threading.Thread(target=self._data_listener_loop, name="DataListener"),
+            threading.Thread(target=self._nak_listener_loop, name="NAKListener"),
+            threading.Thread(target=self._processor_loop, name="Processor"),
+        ]
+        for t in self.threads:
+            t.start()
+
+        _LOGGER.info("DLR threads started")
         return self
 
     def __exit__(
@@ -83,147 +116,166 @@ class DLR(NetworkParticipant):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool:
-        """Close UDP sockets when exiting the context."""
-        self._close_socket(self.sock)
-        self._close_socket(self.nak_sock)
-        self._close_socket(self.repair_sock)
+        _LOGGER.info("Stopping DLR...")
+        self.stop_event.set()
+
+        timeouts = [2.0, 2.0, 5.0]  # data, nak, processor
+        for thread, timeout in zip(self.threads, timeouts):
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                _LOGGER.warning(f"{thread.name} did not stop in time")
+        for s in [self.data_sock, self.nak_sock, self.repair_sock]:
+            self._close_socket(s)
+
+        _LOGGER.info("DLR stopped")
         return False
 
-    def run(self, payload_handler: UserPayload | None = None) -> None:
-        """Run DLR main loop.
-
-        Args:
-            payload_handler: Optional UserPayload instance to process received data.
-        """
-        if not self.sock or not self.nak_sock or not self.repair_sock:
-            raise RuntimeError(
-                "Sockets not initialized. Use 'with DLR(...) as dlr:' context manager."
-            )
-
-        _LOGGER.info(f"PGM DLR started, listening on {self.listen_host}:{self.listen_port}")
-        _LOGGER.info(f"Listening for NAKs on {self.nak_listen_host}:{self.nak_listen_port}")
-
+    def run(self) -> None:
+        """Run DLR main loop (blocks until KeyboardInterrupt)."""
         try:
+            _LOGGER.info("DLR running... Press Ctrl+C to stop")
             while True:
-                # Process incoming NAKs (non-blocking)
-                self._process_naks()
-
-                # Receive DATA/SPM packets
-                try:
-                    data, addr = self.sock.recvfrom(2048)
-                    packet = PGMPacket.unpack(data)
-
-                    if packet.packet_type == PacketType.DATA:
-                        # Cache the packet for potential repair
-                        self.repair_cache.add(packet.sequence, data)
-
-                        # Update last sequence
-                        self.last_spm = packet.sequence
-
-                        # Optionally process payload
-                        if payload_handler and packet.payload:
-                            payload_handler.unpack(packet.payload)
-
-                        _LOGGER.info(f"Cached DATA: [SEQ: {packet.sequence}] from {addr}")
-
-                    elif packet.packet_type == PacketType.SPM:
-                        _LOGGER.info(
-                            f"Received SPM: [SEQ: {packet.sequence}] "
-                            f"Last hop: {packet.last_hop_host}:{packet.last_hop_port}"
-                        )
-
-                except (ValueError, OSError) as e:
-                    _LOGGER.error(f"Error receiving packet: {e}")
-
+                time.sleep(1.0)
         except KeyboardInterrupt:
-            _LOGGER.info("DLR stopped")
+            _LOGGER.info("DLR interrupted by user")
 
-    def _process_naks(self) -> None:
-        """Process incoming NAK requests and send repairs."""
-        if not self.nak_sock or not self.repair_sock:
-            return
+    def _data_listener_loop(self) -> None:
+        _LOGGER.info("Data listener started")
+        assert self.data_sock is not None  # Guaranteed by __enter__
 
-        try:
-            data, addr = self.nak_sock.recvfrom(1024)
-            packet = PGMPacket.unpack(data)
+        while not self.stop_event.is_set():
+            try:
+                data, _ = self.data_sock.recvfrom(2048)
+                packet = PGMPacket.unpack(data)
 
-            if packet.packet_type == PacketType.NAK:
-                if packet.requested_sequence is None:
-                    _LOGGER.warning(f"Received NAK from {addr} with no requested sequence")
-                    return
-
-                _LOGGER.info(f"Received NAK from {addr} for SEQ: {packet.requested_sequence}")
-
-                # Check if we have the requested packet in cache
-                repair_data = self.repair_cache.get(packet.requested_sequence)
-                if repair_data:
-                    # Send repair to forwarder for broadcast
-                    self.repair_sock.sendto(repair_data, (self.forwarder_host, self.forwarder_port))
-                    _LOGGER.info(f"Sent repair for SEQ: {packet.requested_sequence} to forwarder")
-                else:
-                    _LOGGER.warning(
-                        f"Cannot repair SEQ: {packet.requested_sequence} - not in cache"
+                if packet.packet_type == PacketType.DATA:
+                    msg = QueueMessage(
+                        msg_type=MessageType.DATA,
+                        data_msg=DataMessage(sequence=packet.sequence, packet_bytes=data),
                     )
+                    self.processing_queue.put(msg)
+                    _LOGGER.debug(f"Queued DATA [SEQ: {packet.sequence}]")
+                elif packet.packet_type == PacketType.SPM:
+                    _LOGGER.debug(f"Received SPM [SEQ: {packet.sequence}] (ignored)")
 
-        except TimeoutError:
-            # No NAK received, continue
-            pass
-        except (ValueError, OSError) as e:
-            _LOGGER.error(f"Error processing NAK: {e}")
+            except socket.timeout:
+                continue
+            except (ValueError, OSError) as e:
+                if not self.stop_event.is_set():
+                    _LOGGER.error(f"Data listener error: {e}")
+
+        _LOGGER.info("Data listener stopped")
+
+    def _nak_listener_loop(self) -> None:
+        _LOGGER.info("NAK listener started")
+        assert self.nak_sock is not None  # Guaranteed by __enter__
+
+        nak_buffer: set[int] = set()
+        last_flush: float = time.time()
+
+        while not self.stop_event.is_set():
+            current_time = time.time()
+            if current_time - last_flush >= self.nak_aggregation_interval:
+                if nak_buffer:
+                    msg = QueueMessage(
+                        msg_type=MessageType.NAK_BATCH,
+                        nak_msg=NakBatchMessage(sequences=nak_buffer.copy()),
+                    )
+                    self.processing_queue.put(msg)
+                    _LOGGER.debug(f"Queued NAK batch: {len(nak_buffer)} sequences")
+                    nak_buffer.clear()
+                last_flush = current_time
+
+            try:
+                data, _ = self.nak_sock.recvfrom(2048)
+                packet = PGMPacket.unpack(data)
+                if packet.packet_type == PacketType.NAK and packet.requested_sequence is not None:
+                    nak_buffer.add(packet.requested_sequence)
+
+            except socket.timeout:
+                pass
+            except (ValueError, OSError) as e:
+                if not self.stop_event.is_set():
+                    _LOGGER.error(f"NAK listener error: {e}")
+
+        if nak_buffer:
+            msg = QueueMessage(
+                msg_type=MessageType.NAK_BATCH,
+                nak_msg=NakBatchMessage(sequences=nak_buffer),
+            )
+            self.processing_queue.put(msg)
+            _LOGGER.debug(f"Flushed {len(nak_buffer)} NAKs on shutdown")
+
+        _LOGGER.info("NAK listener stopped")
+
+    def _process_message(self, msg: QueueMessage) -> None:
+        """Process a queue message - either DATA or NAK batch."""
+        if msg.msg_type == MessageType.DATA and msg.data_msg:
+            self.repair_cache.add(msg.data_msg.sequence, msg.data_msg.packet_bytes)
+            _LOGGER.info(f"Cached DATA [SEQ: {msg.data_msg.sequence}]")
+        elif msg.msg_type == MessageType.NAK_BATCH and msg.nak_msg:
+            assert self.repair_sock is not None  # Guaranteed by __enter__
+
+            for seq in msg.nak_msg.sequences:
+                if packet_data := self.repair_cache.get(seq):
+                    try:
+                        self.repair_sock.sendto(packet_data, (self.forwarder_host, self.forwarder_port))
+                        _LOGGER.info(f"Sent repair [SEQ: {seq}]")
+                    except OSError as e:
+                        _LOGGER.error(f"Repair send failed [SEQ: {seq}]: {e}")
+                else:
+                    _LOGGER.warning(f"Cannot repair [SEQ: {seq}] - not in cache")
+
+    def _processor_loop(self) -> None:
+        _LOGGER.info("Processor started")
+
+        while not self.stop_event.is_set():
+            try:
+                self._process_message(self.processing_queue.get(timeout=0.1))
+                self.processing_queue.task_done()
+            except Empty:
+                continue
+
+        _LOGGER.info("Draining queue...")
+        while True:
+            try:
+                self._process_message(self.processing_queue.get_nowait())
+                self.processing_queue.task_done()
+            except Empty:
+                break
+
+        _LOGGER.info("Processor stopped")
 
 
 class IntPayload(UserPayload):
-    """Example user payload that packs/unpacks a single integer."""
-
     def __init__(self, value: int = 0) -> None:
-        """Initialize with an integer value.
-
-        Args:
-            value: Integer value to store.
-        """
         self.value = value
 
     def pack(self) -> bytes:
-        """Pack integer to bytes (4 bytes, big endian).
-
-        Returns:
-            bytes: Packed integer.
-        """
         return self.value.to_bytes(4, byteorder="big", signed=True)
 
     def unpack(self, data: bytes) -> None:
-        """Unpack bytes to integer.
-
-        Args:
-            data: Raw bytes to unpack.
-        """
         if len(data) < 4:
             raise ValueError(f"Expected at least 4 bytes, got {len(data)}")
         self.value = int.from_bytes(data[:4], byteorder="big", signed=True)
 
 
 def main() -> None:
-    """Run DLR to cache data and handle repair requests."""
-    listen_host = os.environ.get("LISTEN_HOST", "0.0.0.0")
-    listen_port = int(os.environ.get("LISTEN_PORT", "5001"))
-    nak_listen_host = os.environ.get("NAK_LISTEN_HOST", "0.0.0.0")
-    nak_listen_port = int(os.environ.get("NAK_LISTEN_PORT", "5003"))
-    forwarder_host = os.environ.get("FORWARDER_HOST", "localhost")
-    forwarder_port = int(os.environ.get("FORWARDER_PORT", "5000"))
-    repair_cache_size = int(os.environ.get("REPAIR_CACHE_SIZE", "100"))
+    from src.constants import Settings
 
-    payload = IntPayload()
+    settings = Settings()
 
     with DLR(
-        listen_host,
-        listen_port,
-        nak_listen_host,
-        nak_listen_port,
-        forwarder_host,
-        forwarder_port,
-        repair_cache_size,
+        os.environ.get("LISTEN_HOST", "0.0.0.0"),
+        int(os.environ.get("LISTEN_PORT", "5001")),
+        os.environ.get("NAK_LISTEN_HOST", "0.0.0.0"),
+        int(os.environ.get("NAK_LISTEN_PORT", "5003")),
+        os.environ.get("FORWARDER_HOST", "localhost"),
+        int(os.environ.get("FORWARDER_PORT", "5000")),
+        settings.REPAIR_CACHE_SIZE,
+        settings.NAK_AGGREGATION_INTERVAL,
     ) as dlr:
-        dlr.run(payload)
+        dlr.run()
 
 
 if __name__ == "__main__":
