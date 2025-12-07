@@ -4,7 +4,8 @@ import socket
 from abc import ABC, abstractmethod
 from collections import deque
 from types import TracebackType
-
+from dataclasses import dataclass
+from typing import Final
 
 class NetworkParticipant(ABC):
     """Abstract base class for PGM network participants.
@@ -52,21 +53,24 @@ class NetworkParticipant(ABC):
             sock.close()
 
 
+@dataclass
 class RepairCache:
     """Fixed-size cache for repair data packets.
 
     Stores the most recent N DATA packets for NAK repair requests.
+    Uses a deque for sequence order and dict for O(1) lookups.
     """
 
-    def __init__(self, max_size: int = 100) -> None:
+    _max_size: Final[int]
+
+    def __post_init__(self) -> None:
         """Initialize repair cache.
 
         Args:
             max_size: Maximum number of packets to cache (default: 100).
         """
-        self.max_size = max_size
-        self._cache: deque[tuple[int, bytes]] = deque(maxlen=max_size)
-        self._min_sequence: int = 0
+        self._sequence_order: deque[int] = deque(maxlen=self._max_size)
+        self._packet_data: dict[int, bytes] = {}
 
     def add(self, sequence: int, packet_data: bytes) -> None:
         """Add a packet to the cache.
@@ -75,9 +79,13 @@ class RepairCache:
             sequence: Sequence number of the packet.
             packet_data: Serialized packet bytes.
         """
-        self._cache.append((sequence, packet_data))
-        if len(self._cache) == self.max_size:
-            self._min_sequence = self._cache[0][0]
+        if len(self._sequence_order) == self._max_size:
+            oldest_seq = self._sequence_order[0]
+            self._packet_data.pop(oldest_seq, None)
+
+        # Add new packet
+        self._sequence_order.append(sequence)
+        self._packet_data[sequence] = packet_data
 
     def get(self, sequence: int) -> bytes | None:
         """Retrieve a packet from the cache by sequence number.
@@ -88,10 +96,7 @@ class RepairCache:
         Returns:
             bytes | None: Serialized packet bytes if found, None otherwise.
         """
-        for seq, data in self._cache:
-            if seq == sequence:
-                return data
-        return None
+        return self._packet_data.get(sequence)
 
     def has_sequence(self, sequence: int) -> bool:
         """Check if a sequence number is available in the cache.
@@ -102,6 +107,4 @@ class RepairCache:
         Returns:
             bool: True if sequence is in cache, False otherwise.
         """
-        if not self._cache:
-            return False
-        return self._min_sequence <= sequence <= self._cache[-1][0]
+        return sequence in self._packet_data

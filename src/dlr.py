@@ -1,5 +1,4 @@
 """PGM DLR (Designated Local Repairer) that handles repair requests."""
-
 import logging
 import os
 import socket
@@ -11,6 +10,12 @@ from src.protocol import PacketType, PGMPacket, UserPayload
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 _LOGGER = logging.getLogger(__name__)
 
+
+# -> NAKs -> listen_for_naks thread -> write to head of queue every 0.01s with batch of requested data
+# -> Data -> listen_for_data thread -> queue to immediately -> 
+
+# -> queue -> process thread -> if naks found then fetch repair data and send to forwarder
+#                            -> update cached with new data
 
 class DLR(NetworkParticipant):
     """PGM DLR (Designated Local Repairer).
@@ -30,7 +35,7 @@ class DLR(NetworkParticipant):
         nak_listen_port: int,
         forwarder_host: str,
         forwarder_port: int,
-        repair_cache_size: int = 100,
+        repair_cache_size: int,
     ) -> None:
         """Initialize PGM DLR.
 
@@ -50,7 +55,7 @@ class DLR(NetworkParticipant):
         self.nak_listen_port = nak_listen_port
         self.forwarder_host = forwarder_host
         self.forwarder_port = forwarder_port
-        self.repair_cache = RepairCache(max_size=repair_cache_size)
+        self.repair_cache = RepairCache(repair_cache_size)
         self.nak_sock: socket.socket | None = None
         self.repair_sock: socket.socket | None = None
         self.last_spm = -1
