@@ -5,7 +5,6 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from enum import Enum, auto
 from queue import Empty, Queue
 from types import TracebackType
 
@@ -14,13 +13,6 @@ from src.protocol import PacketType, PGMPacket, UserPayload
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 _LOGGER = logging.getLogger(__name__)
-
-
-class MessageType(Enum):
-    """Types of messages in the processing queue."""
-
-    DATA = auto()
-    NAK_BATCH = auto()
 
 
 @dataclass
@@ -36,15 +28,6 @@ class NakBatchMessage:
     """Message containing aggregated NAK requests."""
 
     sequences: set[int]
-
-
-@dataclass
-class QueueMessage:
-    """Wrapper for messages in the processing queue."""
-
-    msg_type: MessageType
-    data_msg: DataMessage | None = None
-    nak_msg: NakBatchMessage | None = None
 
 
 class DLR(NetworkParticipant):
@@ -73,7 +56,7 @@ class DLR(NetworkParticipant):
         self.forwarder_port = forwarder_port
         self.nak_aggregation_interval = nak_aggregation_interval
 
-        self.processing_queue: Queue[QueueMessage] = Queue()
+        self.processing_queue: Queue[DataMessage | NakBatchMessage] = Queue()
         self.repair_cache = RepairCache(_max_size=repair_cache_size)
 
         self.data_sock: socket.socket | None = None
@@ -94,7 +77,7 @@ class DLR(NetworkParticipant):
 
         self.nak_sock = self._create_socket()
         self.nak_sock.bind((self.nak_listen_host, self.nak_listen_port))
-        self.nak_sock.settimeout(0.1)
+        self.nak_sock.settimeout(self.nak_aggregation_interval)
 
         self.repair_sock = self._create_socket()
 
@@ -149,10 +132,7 @@ class DLR(NetworkParticipant):
                 packet = PGMPacket.unpack(data)
 
                 if packet.packet_type == PacketType.DATA:
-                    msg = QueueMessage(
-                        msg_type=MessageType.DATA,
-                        data_msg=DataMessage(sequence=packet.sequence, packet_bytes=data),
-                    )
+                    msg = DataMessage(sequence=packet.sequence, packet_bytes=data)
                     self.processing_queue.put(msg)
                     _LOGGER.debug(f"Queued DATA [SEQ: {packet.sequence}]")
                 elif packet.packet_type == PacketType.SPM:
@@ -177,14 +157,11 @@ class DLR(NetworkParticipant):
             current_time = time.time()
             if current_time - last_flush >= self.nak_aggregation_interval:
                 if nak_buffer:
-                    msg = QueueMessage(
-                        msg_type=MessageType.NAK_BATCH,
-                        nak_msg=NakBatchMessage(sequences=nak_buffer.copy()),
-                    )
+                    msg = NakBatchMessage(sequences=nak_buffer.copy())
                     self.processing_queue.put(msg)
                     _LOGGER.debug(f"Queued NAK batch: {len(nak_buffer)} sequences")
                     nak_buffer.clear()
-                last_flush = current_time
+                    last_flush = current_time
 
             try:
                 data, _ = self.nak_sock.recvfrom(2048)
@@ -199,24 +176,21 @@ class DLR(NetworkParticipant):
                     _LOGGER.error(f"NAK listener error: {e}")
 
         if nak_buffer:
-            msg = QueueMessage(
-                msg_type=MessageType.NAK_BATCH,
-                nak_msg=NakBatchMessage(sequences=nak_buffer),
-            )
+            msg = NakBatchMessage(sequences=nak_buffer)
             self.processing_queue.put(msg)
             _LOGGER.debug(f"Flushed {len(nak_buffer)} NAKs on shutdown")
 
         _LOGGER.info("NAK listener stopped")
 
-    def _process_message(self, msg: QueueMessage) -> None:
+    def _process_message(self, msg: DataMessage | NakBatchMessage) -> None:
         """Process a queue message - either DATA or NAK batch."""
-        if msg.msg_type == MessageType.DATA and msg.data_msg:
-            self.repair_cache.add(msg.data_msg.sequence, msg.data_msg.packet_bytes)
-            _LOGGER.info(f"Cached DATA [SEQ: {msg.data_msg.sequence}]")
-        elif msg.msg_type == MessageType.NAK_BATCH and msg.nak_msg:
+        if isinstance(msg, DataMessage):
+            self.repair_cache.add(msg.sequence, msg.packet_bytes)
+            _LOGGER.info(f"Cached DATA [SEQ: {msg.sequence}]")
+        elif isinstance(msg, NakBatchMessage):
             assert self.repair_sock is not None  # Guaranteed by __enter__
 
-            for seq in msg.nak_msg.sequences:
+            for seq in msg.sequences:
                 if packet_data := self.repair_cache.get(seq):
                     try:
                         self.repair_sock.sendto(packet_data, (self.forwarder_host, self.forwarder_port))
