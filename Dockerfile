@@ -7,4 +7,6 @@ COPY tests/ ./tests/
 
 RUN pip install --no-cache-dir pytest
 
-CMD ["python", "-u", "src/client.py"]
+ENV PYTHONPATH=/app
+
+CMD ["python", "-u", "-m", "src.sender"]

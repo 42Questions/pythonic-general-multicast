@@ -1,17 +1,17 @@
 # pythonic-general-multicast
 
-A basic UDP implementation with Docker Compose that demonstrates data streaming between clients via a server.
+A basic UDP implementation with Docker Compose that demonstrates data streaming between senders via a server.
 
 ## Architecture
 
 ```
 ┌────────┐    UDP     ┌────────┐    UDP     ┌──────────┐
-│ Client │ ────────► │ Server │ ────────► │ Receiver │
+│ Sender │ ────────► │ Server │ ────────► │ Receiver │
 └────────┘  (random   └────────┘  (forward  └──────────┘
             numbers)              data)
 ```
 
-- **Client**: Sends random numbers (1-1000) via UDP to the server
+- **Sender**: Sends random numbers (1-1000) via UDP to the server
 - **Server**: Receives UDP data and forwards it to the receiver
 - **Receiver**: Listens for and displays forwarded UDP data
 
@@ -44,8 +44,8 @@ LISTEN_PORT=5001 python src/receiver.py
 # Terminal 2: Start the server
 LISTEN_PORT=5000 FORWARD_HOST=localhost FORWARD_PORT=5001 python src/server.py
 
-# Terminal 3: Start the client
-SERVER_HOST=localhost SERVER_PORT=5000 python src/client.py
+# Terminal 3: Start the sender
+SERVER_HOST=localhost SERVER_PORT=5000 python src/sender.py
 ```
 
 ## Development
@@ -93,11 +93,11 @@ docker compose run --rm test
 The tests verify:
 - All services can communicate over the Docker network
 - Data packets contain proper SPM (Source Path Message) sequence numbers
-- End-to-end data flow from client → server → receiver
+- End-to-end data flow from sender → server → receiver
 
 ## Configuration
 
-### Client Environment Variables
+### Sender Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|

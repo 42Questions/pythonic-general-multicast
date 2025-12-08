@@ -1,24 +1,34 @@
 services:
   server:
     build: .
-    command: python -u src/server.py
+    command: python -u -m src.server
     environment:
       - LISTEN_HOST=0.0.0.0
       - LISTEN_PORT=5000
-      - FORWARD_HOST=receiver
-      - FORWARD_PORT=5001
+      - RECEIVER_HOST=receiver
+      - RECEIVER_PORT=5001
+      - DLR_HOST=dlr
+      - DLR_PORT=5001
+      - DLR_NAK_HOST=dlr
+      - DLR_NAK_PORT=5003
+      - OWN_HOST=192.168.1.1
+      - OWN_PORT=5000
     networks:
       - udp-network
     depends_on:
       - receiver
+      - dlr
 
-  client:
+  sender:
     build: .
-    command: python -u src/client.py
+    command: python -u -m src.sender
     environment:
       - SERVER_HOST=server
       - SERVER_PORT=5000
+      - OWN_HOST=192.168.1.100
+      - OWN_PORT=5000
       - SEND_INTERVAL=1.0
+      - SPM_INTERVAL=5.0
     networks:
       - udp-network
     depends_on:
@@ -26,10 +36,24 @@ services:
 
   receiver:
     build: .
-    command: python -u src/receiver.py
+    command: python -u -m src.receiver
     environment:
       - LISTEN_HOST=0.0.0.0
       - LISTEN_PORT=5001
+    networks:
+      - udp-network
+
+  dlr:
+    build: .
+    command: python -u -m src.dlr
+    environment:
+      - LISTEN_HOST=0.0.0.0
+      - LISTEN_PORT=5001
+      - NAK_LISTEN_HOST=0.0.0.0
+      - NAK_LISTEN_PORT=5003
+      - FORWARDER_HOST=server
+      - FORWARDER_PORT=5000
+      - REPAIR_CACHE_SIZE=100
     networks:
       - udp-network
 
@@ -39,9 +63,10 @@ services:
     networks:
       - udp-network
     depends_on:
-      - client
+      - sender
       - server
       - receiver
+      - dlr
 
 networks:
   udp-network:
