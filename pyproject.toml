@@ -17,6 +17,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: System :: Networking",
 ]
+dependencies = [
+    "pydantic>=2.0.0",
+]
 
 [project.optional-dependencies]
 dev = [

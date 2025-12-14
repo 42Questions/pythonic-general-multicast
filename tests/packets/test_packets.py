@@ -1,8 +1,9 @@
 """Unit tests for PGM protocol packet serialization."""
 
-import struct
+from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
 from src.packets.data import DataPacket
 from src.packets.network import NetworkPacket, NetworkPacketTypes
@@ -16,19 +17,20 @@ class TestDataPacket:
     def test_data_packet_roundtrip(self):
         """Test DATA packet serialization and deserialization."""
         payload_data = b"\x01\x02\x03\x04\x05"
-        packet = DataPacket(size=len(payload_data), data=payload_data)
+        packet = DataPacket(data=payload_data)
 
         # Pack and unpack
         packed = packet.pack()
         unpacked = DataPacket.unpack(packed)
 
-        assert unpacked.size == len(payload_data)
+        # Pydantic computed_field appears as callable to mypy/pylint
+        assert cast(int, unpacked.size) == len(payload_data)  # pylint: disable=comparison-with-callable
         assert unpacked.data == payload_data
 
     def test_data_packet_size(self):
         """Test DATA packet size calculation."""
         payload_data = b"\x00" * 100
-        packet = DataPacket(size=len(payload_data), data=payload_data)
+        packet = DataPacket(data=payload_data)
         packed = packet.pack()
 
         # Size field (4 bytes) + payload (100 bytes)
@@ -75,7 +77,7 @@ class TestNetworkPacket:
     def test_network_packet_with_data(self):
         """Test NetworkPacket containing DataPacket."""
         payload_data = b"\x01\x02\x03\x04\x05"
-        data_packet = DataPacket(size=len(payload_data), data=payload_data)
+        data_packet = DataPacket(data=payload_data)
         network_packet = NetworkPacket(payload=data_packet)
 
         # Check packet type
@@ -132,12 +134,12 @@ class TestNetworkByteOrder:
     def test_data_packet_byte_order(self):
         """Test that DataPacket size field uses network byte order."""
         payload_data = b"\x00"
-        packet = DataPacket(size=0x12345678, data=payload_data)
+        packet = DataPacket(data=payload_data)
         packed = packet.pack()
 
-        # First 4 bytes should be size in big endian
+        # First 4 bytes should be size (1 byte) in big endian
         size_bytes = packed[:4]
-        assert size_bytes == b"\x12\x34\x56\x78"
+        assert size_bytes == b"\x00\x00\x00\x01"  # size = 1 in big endian
 
     def test_spm_packet_byte_order(self):
         """Test that SPM packet fields use network byte order."""
@@ -170,5 +172,6 @@ class TestPacketValidation:
     def test_data_packet_too_short(self):
         """Test unpacking DataPacket that is too short."""
         # Only 2 bytes, but need at least 4 for size field
-        with pytest.raises(struct.error):
+        # This will result in empty payload data, which violates min_length=1
+        with pytest.raises(ValidationError):
             DataPacket.unpack(b"\x00\x00")
