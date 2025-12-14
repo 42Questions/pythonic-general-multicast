@@ -3,8 +3,8 @@
 import struct
 from enum import IntEnum
 from dataclasses import dataclass
-from packets.data import DataPacket
-from packets.system import SystemPacket, SystemPacketTypes, SPM
+from src.packets.data import DataPacket
+from src.packets.system import SystemPacket, SystemPacketTypes, SPM
 SYSTEM_PACKET_CLASSES = {
     SystemPacketTypes.SPM: SPM,
 }

@@ -1,55 +1,114 @@
 """Unit tests for PGM protocol packet serialization."""
 
+import struct
 import pytest
 
-from src.protocol import PacketType, PGMPacket, UserPayload
+from src.packets.network import NetworkPacket, NetworkPacketTypes
+from src.packets.system import SystemPacket, SystemPacketTypes, SPM
+from src.packets.data import DataPacket
+from src.utils import ipv4_to_int, int_to_ipv4
 
 
-class TestPGMPacketSerialization:
-    """Test PGM packet pack/unpack with network byte order."""
+class TestDataPacket:
+    """Test DataPacket serialization."""
 
     def test_data_packet_roundtrip(self):
         """Test DATA packet serialization and deserialization."""
-        payload = b"\x01\x02\x03\x04\x05"
-        packet = PGMPacket(packet_type=PacketType.DATA, sequence=12345, payload=payload)
+        payload_data = b"\x01\x02\x03\x04\x05"
+        packet = DataPacket(size=len(payload_data), data=payload_data)
 
         # Pack and unpack
         packed = packet.pack()
-        unpacked = PGMPacket.unpack(packed)
+        unpacked = DataPacket.unpack(packed)
 
-        assert unpacked.packet_type == PacketType.DATA
-        assert unpacked.sequence == 12345
-        assert unpacked.payload == payload
+        assert unpacked.size == len(payload_data)
+        assert unpacked.data == payload_data
+
+    def test_data_packet_size(self):
+        """Test DATA packet size calculation."""
+        payload_data = b"\x00" * 100
+        packet = DataPacket(size=len(payload_data), data=payload_data)
+        packed = packet.pack()
+
+        # Size field (4 bytes) + payload (100 bytes)
+        assert len(packed) == 4 + 100
+
+
+class TestSystemPacket:
+    """Test SystemPacket (SPM) serialization."""
 
     def test_spm_packet_roundtrip(self):
         """Test SPM packet serialization and deserialization."""
-        packet = PGMPacket(
-            packet_type=PacketType.SPM, sequence=99999, last_hop_host="10.0.0.1", last_hop_port=8080
-        )
+        host = "10.0.0.1"
+        port = 8080
+        packet = SPM.from_address(host, port)
 
         # Pack and unpack
         packed = packet.pack()
-        unpacked = PGMPacket.unpack(packed)
+        unpacked = SPM.unpack(packed)
 
-        assert unpacked.packet_type == PacketType.SPM
-        assert unpacked.sequence == 99999
-        assert unpacked.last_hop_host == "10.0.0.1"
-        assert unpacked.last_hop_port == 8080
+        assert unpacked.packet_type == SystemPacketTypes.SPM
+        assert int_to_ipv4(unpacked.last_hop_host) == host
+        assert unpacked.last_hop_port == port
 
-    def test_nak_packet_roundtrip(self):
-        """Test NAK packet serialization and deserialization."""
-        packet = PGMPacket(packet_type=PacketType.NAK, sequence=0, requested_sequence=54321)
+    def test_spm_packet_repr(self):
+        """Test SPM packet string representation."""
+        packet = SPM.from_address("192.168.1.1", 5000)
+        repr_str = repr(packet)
+        
+        assert "192.168.1.1" in repr_str
+        assert "5000" in repr_str
+
+    def test_spm_packet_size(self):
+        """Test SPM packet size is fixed."""
+        packet = SPM.from_address("192.168.1.1", 5000)
+        packed = packet.pack()
+
+        # packet_type (1 byte) + IPv4 (4 bytes) + port (2 bytes)
+        assert len(packed) == 1 + 4 + 2
+
+
+class TestNetworkPacket:
+    """Test NetworkPacket two-level serialization."""
+
+    def test_network_packet_with_data(self):
+        """Test NetworkPacket containing DataPacket."""
+        payload_data = b"\x01\x02\x03\x04\x05"
+        data_packet = DataPacket(size=len(payload_data), data=payload_data)
+        network_packet = NetworkPacket(payload=data_packet)
+
+        # Check packet type
+        assert network_packet.packet_type == NetworkPacketTypes.DATA
 
         # Pack and unpack
-        packed = packet.pack()
-        unpacked = PGMPacket.unpack(packed)
+        packed = network_packet.pack()
+        unpacked = NetworkPacket.from_bytes(packed)
 
-        assert unpacked.packet_type == PacketType.NAK
-        assert unpacked.requested_sequence == 54321
+        assert isinstance(unpacked.payload, DataPacket)
+        assert unpacked.payload.data == payload_data
+
+    def test_network_packet_with_system(self):
+        """Test NetworkPacket containing SystemPacket (SPM)."""
+        spm = SPM.from_address("10.0.0.1", 8080)
+        network_packet = NetworkPacket(payload=spm)
+
+        # Check packet type
+        assert network_packet.packet_type == NetworkPacketTypes.SYSTEM
+
+        # Pack and unpack
+        packed = network_packet.pack()
+        unpacked = NetworkPacket.from_bytes(packed)
+
+        assert isinstance(unpacked.payload, SPM)
+        assert int_to_ipv4(unpacked.payload.last_hop_host) == "10.0.0.1"
+        assert unpacked.payload.last_hop_port == 8080
+
+
+class TestIPv4Conversion:
+    """Test IPv4 utility functions."""
 
     def test_ipv4_conversion(self):
         """Test IPv4 string to int conversion."""
-        # Test various IP addresses
         test_cases = [
             ("0.0.0.0", 0),
             ("255.255.255.255", 0xFFFFFFFF),
@@ -58,121 +117,57 @@ class TestPGMPacketSerialization:
         ]
 
         for ip_str, expected_int in test_cases:
-            result = PGMPacket._ipv4_to_int(ip_str)
+            result = ipv4_to_int(ip_str)
             assert result == expected_int, f"Failed for {ip_str}"
 
             # Test round trip
-            back_to_str = PGMPacket._int_to_ipv4(result)
+            back_to_str = int_to_ipv4(result)
             assert back_to_str == ip_str, f"Round trip failed for {ip_str}"
 
-    def test_network_byte_order(self):
-        """Test that packet uses big endian (network byte order)."""
-        packet = PGMPacket(packet_type=PacketType.DATA, sequence=0x12345678, payload=b"\x00")
 
+class TestNetworkByteOrder:
+    """Test that packets use big endian (network byte order)."""
+
+    def test_data_packet_byte_order(self):
+        """Test that DataPacket size field uses network byte order."""
+        payload_data = b"\x00"
+        packet = DataPacket(size=0x12345678, data=payload_data)
+        packed = packet.pack()
+
+        # First 4 bytes should be size in big endian
+        size_bytes = packed[:4]
+        assert size_bytes == b"\x12\x34\x56\x78"
+
+    def test_spm_packet_byte_order(self):
+        """Test that SPM packet fields use network byte order."""
+        packet = SPM.from_address("1.2.3.4", 0x1234)
         packed = packet.pack()
 
         # First byte should be packet type
-        assert packed[0] == PacketType.DATA
+        assert packed[0] == SystemPacketTypes.SPM
 
-        # Next 4 bytes should be sequence in big endian
-        seq_bytes = packed[1:5]
-        assert seq_bytes == b"\x12\x34\x56\x78"
+        # Next 4 bytes should be IP address in big endian
+        ip_bytes = packed[1:5]
+        assert ip_bytes == b"\x01\x02\x03\x04"
 
-    def test_data_packet_requires_payload(self):
-        """Test that DATA packet requires payload."""
-        packet = PGMPacket(packet_type=PacketType.DATA, sequence=1, payload=None)
+        # Next 2 bytes should be port in big endian
+        port_bytes = packed[5:7]
+        assert port_bytes == b"\x12\x34"
 
-        with pytest.raises(ValueError, match="DATA packet requires payload"):
-            packet.pack()
 
-    def test_spm_packet_requires_hop_info(self):
-        """Test that SPM packet requires last hop information."""
-        packet = PGMPacket(
-            packet_type=PacketType.SPM, sequence=1, last_hop_host=None, last_hop_port=None
-        )
+class TestPacketValidation:
+    """Test packet validation and error handling."""
 
-        with pytest.raises(ValueError, match="SPM packet requires last_hop_host and last_hop_port"):
-            packet.pack()
-
-    def test_nak_packet_requires_requested_sequence(self):
-        """Test that NAK packet requires requested sequence."""
-        packet = PGMPacket(packet_type=PacketType.NAK, sequence=1, requested_sequence=None)
-
-        with pytest.raises(ValueError, match="NAK packet requires requested_sequence"):
-            packet.pack()
-
-    def test_packet_too_short(self):
-        """Test unpacking packet that is too short."""
-        with pytest.raises(ValueError, match="Packet too short"):
-            PGMPacket.unpack(b"\x00")
-
-    def test_invalid_packet_type(self):
-        """Test unpacking packet with invalid type."""
+    def test_invalid_network_packet_type(self):
+        """Test unpacking NetworkPacket with invalid type."""
         # Create packet with invalid type (99)
-        invalid_data = b"\x63\x00\x00\x00\x01"  # type=99, seq=1
+        invalid_data = b"\x63\x00\x00\x00\x01"
 
         with pytest.raises(ValueError):
-            PGMPacket.unpack(invalid_data)
+            NetworkPacket.from_bytes(invalid_data)
 
-
-class TestUserPayloadABC:
-    """Test UserPayload abstract base class."""
-
-    def test_cannot_instantiate_abstract_class(self):
-        """Test that UserPayload cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            UserPayload()
-
-    def test_concrete_implementation(self):
-        """Test a concrete UserPayload implementation."""
-
-        class IntPayload(UserPayload):
-            def __init__(self, value: int = 0):
-                self.value = value
-
-            def pack(self) -> bytes:
-                return self.value.to_bytes(4, byteorder="big", signed=True)
-
-            def unpack(self, data: bytes) -> None:
-                self.value = int.from_bytes(data[:4], byteorder="big", signed=True)
-
-        # Test pack
-        payload = IntPayload(42)
-        packed = payload.pack()
-        assert packed == b"\x00\x00\x00\x2a"
-
-        # Test unpack
-        payload2 = IntPayload()
-        payload2.unpack(packed)
-        assert payload2.value == 42
-
-
-class TestPacketSizes:
-    """Test packet sizes are as expected."""
-
-    def test_data_packet_size(self):
-        """Test DATA packet size calculation."""
-        payload = b"\x00" * 100
-        packet = PGMPacket(packet_type=PacketType.DATA, sequence=1, payload=payload)
-        packed = packet.pack()
-
-        # Common header (5 bytes) + payload (100 bytes)
-        assert len(packed) == 5 + 100
-
-    def test_spm_packet_size(self):
-        """Test SPM packet size is fixed."""
-        packet = PGMPacket(
-            packet_type=PacketType.SPM, sequence=1, last_hop_host="192.168.1.1", last_hop_port=5000
-        )
-        packed = packet.pack()
-
-        # Common header (5 bytes) + IPv4 (4 bytes) + port (2 bytes)
-        assert len(packed) == 5 + 4 + 2
-
-    def test_nak_packet_size(self):
-        """Test NAK packet size is fixed."""
-        packet = PGMPacket(packet_type=PacketType.NAK, sequence=0, requested_sequence=100)
-        packed = packet.pack()
-
-        # Common header (5 bytes) + requested_sequence (4 bytes)
-        assert len(packed) == 5 + 4
+    def test_data_packet_too_short(self):
+        """Test unpacking DataPacket that is too short."""
+        # Only 2 bytes, but need at least 4 for size field
+        with pytest.raises(struct.error):
+            DataPacket.unpack(b"\x00\x00")
