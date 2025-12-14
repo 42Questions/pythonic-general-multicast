@@ -1,18 +1,26 @@
 """PGM protocol packet definitions and base classes."""
 
 import struct
-from abc import ABC
-from enum import IntEnum
 from dataclasses import dataclass, field, fields
-from src.utils import ipv4_to_int, int_to_ipv4
+from enum import IntEnum
+from typing import Self
+
+from src.utils import int_to_ipv4, ipv4_to_int
+
 
 class SystemPacketTypes(IntEnum):
     SPM = 0  # Source Path Message
 
+
 @dataclass
-class SystemPacket(ABC):
-    packet_type: SystemPacketTypes = field(init=False, metadata={'format': 'B'})
-    
+class SystemPacket:
+    packet_type: SystemPacketTypes = field(init=False, metadata={"format": "B"})
+
+    def __post_init__(self) -> None:
+        """Prevent direct instantiation of abstract base class."""
+        if self.__class__ is SystemPacket:
+            raise TypeError("Cannot instantiate abstract class SystemPacket directly")
+
     @classmethod
     def get_format(cls) -> str:
         """Generate struct format string from field metadata.
@@ -20,8 +28,8 @@ class SystemPacket(ABC):
         Returns:
             str: Format string with network byte order prefix (e.g., '!BI')
         """
-        format_chars = ''.join(f.metadata['format'] for f in fields(cls))
-        return f'!{format_chars}'
+        format_chars = "".join(f.metadata["format"] for f in fields(cls))
+        return f"!{format_chars}"
 
     @classmethod
     def get_size(cls) -> int:
@@ -33,12 +41,12 @@ class SystemPacket(ABC):
         return struct.calcsize(cls.get_format())
 
     @classmethod
-    def unpack(cls, data: bytes):
+    def unpack(cls, data: bytes) -> Self:
         """Deserialize bytes into packet instance."""
-        values = struct.unpack(cls.get_format(), data[:cls.get_size()])
+        values = struct.unpack(cls.get_format(), data[: cls.get_size()])
         # Map unpacked values to non-init fields
         field_names = [f.name for f in fields(cls) if f.init]
-        return cls(**dict(zip(field_names, values[1:])))  # Skip packet_type
+        return cls(**dict(zip(field_names, values[1:], strict=True)))  # Skip packet_type
 
     def pack(self) -> bytes:
         """Serialize packet to bytes."""
@@ -48,12 +56,14 @@ class SystemPacket(ABC):
 
 @dataclass
 class SPM(SystemPacket):
-    packet_type: SystemPacketTypes = field(default=SystemPacketTypes.SPM, init=False, metadata={'format': 'B'})
-    last_hop_host: int = field(metadata={'format': 'I'})  # IPv4 address as uint32
-    last_hop_port: int = field(metadata={'format': 'H'})  # Port as uint16
+    packet_type: SystemPacketTypes = field(
+        default=SystemPacketTypes.SPM, init=False, metadata={"format": "B"}
+    )
+    last_hop_host: int = field(metadata={"format": "I"})  # IPv4 address as uint32
+    last_hop_port: int = field(metadata={"format": "H"})  # Port as uint16
 
     @classmethod
-    def from_address(cls, host: str, port: int) -> 'SPM':
+    def from_address(cls, host: str, port: int) -> SPM:
         """Create SPM from IPv4 address string and port.
 
         Args:

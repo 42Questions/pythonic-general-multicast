@@ -1,17 +1,21 @@
 """PGM protocol packet definitions and base classes."""
 
 import struct
-from enum import IntEnum
 from dataclasses import dataclass
+from enum import IntEnum
+
 from src.packets.data import DataPacket
-from src.packets.system import SystemPacket, SystemPacketTypes, SPM
+from src.packets.system import SPM, SystemPacket, SystemPacketTypes
+
 SYSTEM_PACKET_CLASSES = {
     SystemPacketTypes.SPM: SPM,
 }
 
+
 class NetworkPacketTypes(IntEnum):
     SYSTEM = 0  # System Packet
-    DATA = 1   # Data Packet
+    DATA = 1  # Data Packet
+
 
 @dataclass
 class NetworkPacket:
@@ -22,16 +26,15 @@ class NetworkPacket:
         """Derive packet type from payload."""
         if isinstance(self.payload, SystemPacket):
             return NetworkPacketTypes.SYSTEM
-        else:
-            return NetworkPacketTypes.DATA
+        return NetworkPacketTypes.DATA
 
     def pack(self) -> bytes:
         """Serialize NetworkPacket to bytes."""
-        type_byte = struct.pack('!B', self.packet_type)
+        type_byte = struct.pack("!B", self.packet_type)
         return type_byte + self.payload.pack()
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> 'NetworkPacket':
+    def from_bytes(cls, data: bytes) -> NetworkPacket:
         """Deserialize bytes into NetworkPacket.
 
         Simple two-level dispatch:
@@ -40,6 +43,7 @@ class NetworkPacket:
         """
         packet_type = NetworkPacketTypes(data[0])
 
+        payload: SystemPacket | DataPacket
         if packet_type == NetworkPacketTypes.SYSTEM:
             system_type = SystemPacketTypes(data[1])
             payload = SYSTEM_PACKET_CLASSES[system_type].unpack(data[1:])
